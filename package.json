@@ -1,0 +1,190 @@
+{
+  "name": "cursor-workspace",
+  "displayName": "Cursor Workspace",
+  "description": "管理 Cursor / VS Code 多根 Workspace：从配置路径勾选一级项目新建，支持打开、编辑与删除。",
+  "version": "0.1.19",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:cursorWorkspace.workspaces",
+    "onCommand:cursorWorkspace.create",
+    "onCommand:cursorWorkspace.refresh",
+    "onCommand:cursorWorkspace.open",
+    "onCommand:cursorWorkspace.openInNewWindow",
+    "onCommand:cursorWorkspace.delete",
+    "onCommand:cursorWorkspace.edit",
+    "onCommand:cursorWorkspace.editCurrent",
+    "onCommand:cursorWorkspace.openStorageFolder"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Cursor Workspace",
+      "properties": {
+        "cursorWorkspace.projectFolders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "存放候选项目的目录。插件只扫描这些目录下的第一层文件夹，不递归。未配置时会回退读取 projectManager.rootFolders。"
+        },
+        "cursorWorkspace.workspaceStoragePath": {
+          "type": "string",
+          "default": "",
+          "description": "Workspace 文件（.code-workspace）存放目录。留空则使用插件全局存储目录。"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cursorWorkspace",
+          "title": "Cursor Workspace",
+          "icon": "media/cursor-workspace.svg"
+        }
+      ]
+    },
+    "views": {
+      "cursorWorkspace": [
+        {
+          "id": "cursorWorkspace.workspaces",
+          "name": "Workspaces"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "cursorWorkspace.workspaces",
+        "contents": "尚未保存任何 Workspace。\n[新建 Workspace](command:cursorWorkspace.create)\n\n请先在设置中配置 `cursorWorkspace.projectFolders`（仅扫描一级子文件夹）。"
+      }
+    ],
+    "commands": [
+      {
+        "command": "cursorWorkspace.refresh",
+        "title": "刷新 Workspace 列表",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "cursorWorkspace.create",
+        "title": "新建 Workspace",
+        "icon": "$(add)"
+      },
+      {
+        "command": "cursorWorkspace.open",
+        "title": "打开 Workspace"
+      },
+      {
+        "command": "cursorWorkspace.openInNewWindow",
+        "title": "在新窗口打开",
+        "icon": "$(empty-window)"
+      },
+      {
+        "command": "cursorWorkspace.edit",
+        "title": "编辑 Workspace",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "cursorWorkspace.editCurrent",
+        "title": "向当前 Workspace 添加项目",
+        "icon": "$(star-full)"
+      },
+      {
+        "command": "cursorWorkspace.delete",
+        "title": "删除 Workspace",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "cursorWorkspace.openStorageFolder",
+        "title": "打开 Workspace 存放目录"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "cursorWorkspace.editCurrent",
+          "when": "view == cursorWorkspace.workspaces && cursorWorkspace.hasCurrent",
+          "group": "navigation@0"
+        },
+        {
+          "command": "cursorWorkspace.create",
+          "when": "view == cursorWorkspace.workspaces",
+          "group": "navigation@1"
+        },
+        {
+          "command": "cursorWorkspace.refresh",
+          "when": "view == cursorWorkspace.workspaces",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "cursorWorkspace.edit",
+          "when": "view == cursorWorkspace.workspaces && (viewItem == workspace || viewItem == workspaceCurrent)",
+          "group": "inline@1"
+        },
+        {
+          "command": "cursorWorkspace.delete",
+          "when": "view == cursorWorkspace.workspaces && (viewItem == workspace || viewItem == workspaceCurrent)",
+          "group": "inline@2"
+        },
+        {
+          "command": "cursorWorkspace.open",
+          "when": "view == cursorWorkspace.workspaces && (viewItem == workspace || viewItem == workspaceCurrent)",
+          "group": "1_open"
+        },
+        {
+          "command": "cursorWorkspace.openInNewWindow",
+          "when": "view == cursorWorkspace.workspaces && (viewItem == workspace || viewItem == workspaceCurrent)",
+          "group": "1_open"
+        },
+        {
+          "command": "cursorWorkspace.edit",
+          "when": "view == cursorWorkspace.workspaces && (viewItem == workspace || viewItem == workspaceCurrent)",
+          "group": "2_modify"
+        },
+        {
+          "command": "cursorWorkspace.delete",
+          "when": "view == cursorWorkspace.workspaces && (viewItem == workspace || viewItem == workspaceCurrent)",
+          "group": "2_modify"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "cursorWorkspace.open",
+          "when": "false"
+        },
+        {
+          "command": "cursorWorkspace.openInNewWindow",
+          "when": "false"
+        },
+        {
+          "command": "cursorWorkspace.edit",
+          "when": "false"
+        },
+        {
+          "command": "cursorWorkspace.delete",
+          "when": "false"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package --no-dependencies --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^5.3.3"
+  }
+}
