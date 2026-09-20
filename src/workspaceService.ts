@@ -5,6 +5,9 @@ import { ProjectInfo, ProjectListResult, ProjectScanCache, WorkspaceFolderEntry,
 
 const CONFIG_SECTION = "cursorWorkspace";
 const PROJECT_CACHE_KEY = "cursorWorkspace.projectScanCache";
+const FOLDER_KEY = "projectFolders";
+const STORAGE_PATH_KEY = "workspaceStoragePath";
+const LEGACY_FOLDER_LIST_KEY = "projectFolderList";
 
 /**
  * Workspace 文件读写、项目扫描与打开/删除。
@@ -21,31 +24,289 @@ export class WorkspaceService {
   }
 
   /**
-   * 存放候选项目的目录。
-   * 优先读本扩展配置；未配置时回退 projectManager.rootFolders，方便与项目管理插件共用。
+   * 存放候选项目的目录，只读本扩展的 cursorWorkspace.projectFolders。
    */
   getProjectFolders(): string[] {
-    const own = this.readPathList(CONFIG_SECTION, "projectFolders");
-    if (own.length > 0) {
-      return own;
-    }
-    return this.readPathList("projectManager", "rootFolders");
+    return this.getConfiguredProjectFolders();
   }
 
-  /** .code-workspace 文件存放目录 */
-  getStorageDir(): string {
-    const configured = vscode.workspace
-      .getConfiguration(CONFIG_SECTION)
-      .get<string>("workspaceStoragePath", "")
-      .trim();
+  /** 用户在本插件里配置的候选目录 */
+  getConfiguredProjectFolders(): string[] {
+    return this.parseProjectFolders(
+      vscode.workspace.getConfiguration(CONFIG_SECTION).get(FOLDER_KEY)
+    );
+  }
 
-    if (configured.length > 0) {
-      return this.normalizePath(this.expandHome(configured));
+  /** 合并旧版输入框 / 隐藏列表配置到 projectFolders 数组。 */
+  async migrateProjectFoldersSetting(): Promise<void> {
+    const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+    const inspected = config.inspect(FOLDER_KEY);
+    const globalValue = inspected?.globalValue;
+    const hiddenList = this.parseProjectFolders(
+      config.get(LEGACY_FOLDER_LIST_KEY)
+    );
+    const hasLegacyHiddenList = config.get(LEGACY_FOLDER_LIST_KEY) !== undefined;
+    const hasLegacyDraftInput = config.get("projectFolderInput") !== undefined;
+    const needsMigrate =
+      hasLegacyHiddenList ||
+      hasLegacyDraftInput ||
+      typeof globalValue === "string";
+
+    if (!needsMigrate) {
+      return;
     }
 
+    let merged: string[] = [];
+    if (hiddenList.length > 0) {
+      merged = hiddenList;
+    } else if (Array.isArray(globalValue)) {
+      merged = this.parseProjectFolders(globalValue);
+    } else if (typeof globalValue === "string" && globalValue.trim().length > 0) {
+      merged = this.parseProjectFolders(globalValue);
+    }
+
+    try {
+      await config.update(
+        FOLDER_KEY,
+        merged,
+        vscode.ConfigurationTarget.Global
+      );
+      if (hasLegacyHiddenList) {
+        await config.update(
+          LEGACY_FOLDER_LIST_KEY,
+          undefined,
+          vscode.ConfigurationTarget.Global
+        );
+      }
+      if (hasLegacyDraftInput) {
+        await config.update(
+          "projectFolderInput",
+          undefined,
+          vscode.ConfigurationTarget.Global
+        );
+      }
+    } catch (migrateProjectFoldersErr) {
+      console.error("Failed to migrate projectFolders", migrateProjectFoldersErr);
+    }
+  }
+
+  /** 将误设为数组的 workspaceStoragePath 还原为字符串。 */
+  async migrateStoragePathSetting(): Promise<void> {
+    const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+    const raw = config.get(STORAGE_PATH_KEY);
+    if (!Array.isArray(raw)) {
+      return;
+    }
+
+    const paths = this.parseProjectFolders(raw);
+    const value = paths[0] ?? "";
+
+    try {
+      await config.update(
+        STORAGE_PATH_KEY,
+        value,
+        vscode.ConfigurationTarget.Global
+      );
+    } catch (migrateStoragePathErr) {
+      console.error("Failed to migrate workspaceStoragePath", migrateStoragePathErr);
+    }
+  }
+
+  async removeProjectFolder(dir: string): Promise<void> {
+    const normalized = this.normalizePath(this.expandHome(dir.trim()));
+    const next = this.getProjectFolderRawLines().filter(
+      (item) => this.normalizePath(this.expandHome(item)) !== normalized
+    );
+    await this.writeProjectFolders(next);
+  }
+
+  /** 打开文件夹选择器，每次只选一个目录。 */
+  async pickProjectRootDir(): Promise<string | undefined> {
+    const current = this.getConfiguredProjectFolders();
+    const defaultUri =
+      current[0] && fs.existsSync(current[0])
+        ? vscode.Uri.file(current[0])
+        : undefined;
+
+    const uris = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      openLabel: "选择路径",
+      title: "选择路径",
+      defaultUri,
+    });
+
+    if (!uris || uris.length === 0) {
+      return undefined;
+    }
+    return this.normalizePath(uris[0].fsPath);
+  }
+
+  async addProjectFolders(dirs: string[]): Promise<string[]> {
+    const seen = new Set(this.getConfiguredProjectFolders());
+    const added: string[] = [];
+    for (const dir of dirs) {
+      if (!dir.trim()) {
+        throw new Error("添加的路径不能为空");
+      }
+      const normalized = this.normalizePath(this.expandHome(dir.trim()));
+      if (!normalized) {
+        throw new Error("添加的路径不能为空");
+      }
+      if (seen.has(normalized)) {
+        continue;
+      }
+      const invalidReason = this.validateProjectFolderInput(normalized);
+      if (invalidReason) {
+        throw new Error(invalidReason);
+      }
+      seen.add(normalized);
+      added.push(normalized);
+    }
+    if (added.length === 0) {
+      return [];
+    }
+
+    await this.writeProjectFolders([
+      ...this.getProjectFolderRawLines(),
+      ...added,
+    ]);
+    return added;
+  }
+
+  private async writeProjectFolders(folders: string[]): Promise<void> {
+    try {
+      await vscode.workspace
+        .getConfiguration(CONFIG_SECTION)
+        .update(
+          FOLDER_KEY,
+          folders.filter((folder) => folder.trim().length > 0),
+          vscode.ConfigurationTarget.Global
+        );
+    } catch (updateProjectFoldersErr) {
+      const message =
+        updateProjectFoldersErr instanceof Error
+          ? updateProjectFoldersErr.message
+          : String(updateProjectFoldersErr);
+      throw new Error(`保存候选项目目录失败: ${message}`);
+    }
+  }
+
+  private validateProjectFolderInput(value: string): string | undefined {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return "添加的路径不能为空";
+    }
+    const normalized = this.normalizePath(this.expandHome(trimmed));
+    if (!fs.existsSync(normalized)) {
+      return `路径不存在: ${normalized}`;
+    }
+    if (!fs.statSync(normalized).isDirectory()) {
+      return "请填写目录路径，不是文件";
+    }
+    return undefined;
+  }
+
+  /** 插件全局默认的 .code-workspace 存放目录 */
+  getDefaultStorageDir(): string {
     return this.normalizePath(
       path.join(this.context.globalStorageUri.fsPath, "workspaces")
     );
+  }
+
+  /** 用户填写的工作区目录；未填写时为空 */
+  getConfiguredStoragePath(): string {
+    return vscode.workspace
+      .getConfiguration(CONFIG_SECTION)
+      .get<string>(STORAGE_PATH_KEY, "")
+      .trim();
+  }
+
+  /** 当前生效的 .code-workspace 文件存放目录 */
+  getStorageDir(): string {
+    const configured = this.getConfiguredStoragePath();
+    if (configured.length > 0) {
+      return this.normalizePath(this.expandHome(configured));
+    }
+    return this.getDefaultStorageDir();
+  }
+
+  /** 打开系统文件夹选择器，挑选工作区目录（单选）。 */
+  async pickStorageDir(): Promise<string | undefined> {
+    const current = this.getStorageDir();
+    const defaultUri = fs.existsSync(current)
+      ? vscode.Uri.file(current)
+      : undefined;
+
+    const uris = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      openLabel: "选择工作区目录",
+      title: `选择工作区目录（全局默认：${this.getDefaultStorageDir()}）`,
+      defaultUri,
+    });
+
+    if (!uris || uris.length === 0) {
+      return undefined;
+    }
+    return this.normalizePath(uris[0].fsPath);
+  }
+
+  async setStoragePath(dir: string): Promise<void> {
+    const trimmed = dir.trim();
+    const value =
+      trimmed.length === 0
+        ? this.getDefaultStorageDir()
+        : this.normalizePath(this.expandHome(trimmed));
+
+    try {
+      await vscode.workspace
+        .getConfiguration(CONFIG_SECTION)
+        .update(
+          STORAGE_PATH_KEY,
+          value,
+          vscode.ConfigurationTarget.Global
+        );
+    } catch (updateStoragePathErr) {
+      const message =
+        updateStoragePathErr instanceof Error
+          ? updateStoragePathErr.message
+          : String(updateStoragePathErr);
+      throw new Error(`保存工作区目录失败: ${message}`);
+    }
+
+    this.ensureStorageDir();
+  }
+
+  /** 设置项为空时写入默认路径，避免设置页输入框置空。 */
+  async ensureDefaultStoragePathFilled(): Promise<void> {
+    if (this.getConfiguredStoragePath().length > 0) {
+      return;
+    }
+    await this.setStoragePath(this.getDefaultStorageDir());
+  }
+
+  /** 清除已废弃的只读展示项，避免设置页出现两条路径。 */
+  async clearObsoleteDefaultPathSetting(): Promise<void> {
+    const inspected = vscode.workspace
+      .getConfiguration(CONFIG_SECTION)
+      .inspect<string>("globalDefaultWorkspaceStoragePath");
+    if (!inspected?.globalValue) {
+      return;
+    }
+    try {
+      await vscode.workspace
+        .getConfiguration(CONFIG_SECTION)
+        .update(
+          "globalDefaultWorkspaceStoragePath",
+          undefined,
+          vscode.ConfigurationTarget.Global
+        );
+    } catch (clearObsoletePathErr) {
+      console.error("Failed to clear obsolete default path", clearObsoletePathErr);
+    }
   }
 
   ensureStorageDir(): void {
@@ -581,14 +842,36 @@ export class WorkspaceService {
       .trim();
   }
 
-  private readPathList(section: string, key: string): string[] {
-    const configured = vscode.workspace
-      .getConfiguration(section)
-      .get<string[]>(key, []);
+  private getProjectFolderRawLines(): string[] {
+    return this.splitProjectFolderLines(
+      vscode.workspace.getConfiguration(CONFIG_SECTION).get(FOLDER_KEY)
+    );
+  }
 
-    return configured
-      .map((folder) => this.normalizePath(this.expandHome(folder.trim())))
-      .filter((folder) => folder.length > 0);
+  private parseProjectFolders(raw: unknown): string[] {
+    const seen = new Set<string>();
+    const folders: string[] = [];
+    for (const line of this.splitProjectFolderLines(raw)) {
+      const normalized = this.normalizePath(this.expandHome(line));
+      if (!normalized || seen.has(normalized)) {
+        continue;
+      }
+      seen.add(normalized);
+      folders.push(normalized);
+    }
+    return folders;
+  }
+
+  private splitProjectFolderLines(raw: unknown): string[] {
+    const chunks = Array.isArray(raw)
+      ? raw.map((item) => String(item))
+      : typeof raw === "string"
+        ? [raw]
+        : [];
+    return chunks
+      .flatMap((chunk) => chunk.split(/\r?\n/))
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
   }
 
   private expandHome(input: string): string {

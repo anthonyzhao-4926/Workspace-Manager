@@ -168,8 +168,6 @@ function renderGroups(list, mode) {
     .join("");
 }
 
-let listRenderToken = 0;
-
 function renderAvailable() {
   const leftScroll = projectListEl.scrollTop;
   const visible = visibleProjects();
@@ -207,43 +205,8 @@ function renderSelected() {
 }
 
 function render() {
-  listRenderToken += 1;
   renderAvailable();
   renderSelected();
-}
-
-function afterPaint(done) {
-  requestAnimationFrame(function () {
-    requestAnimationFrame(function () {
-      setTimeout(done, 0);
-    });
-  });
-}
-
-function applyShell(message) {
-  applyCurrentWorkspace(message);
-  applyMode(message.mode || "create");
-  if (message.initForm) {
-    nameInput.value = message.workspaceName || "";
-    selectedSet.clear();
-    for (const projectPath of message.selectedPaths || []) {
-      selectedSet.add(projectPath);
-    }
-  }
-}
-
-function showSkeleton(message) {
-  listRenderToken += 1;
-  projects = [];
-  filterText = filterInput.value;
-  setScanning(true);
-  applyShell(message);
-  subtitle.textContent = "正在加载项目列表…";
-  projectListEl.innerHTML = loadingHtml();
-  renderSelected();
-  afterPaint(function () {
-    vscode.postMessage({ type: "shellPainted" });
-  });
 }
 
 function applyState(message) {
@@ -356,16 +319,6 @@ filterInput.addEventListener("input", () => {
 
 window.addEventListener("message", (event) => {
   const message = event.data;
-  if (message.type === "showShell") {
-    showSkeleton(message);
-    return;
-  }
-  if (message.type === "confirmVisiblePaint") {
-    afterPaint(function () {
-      vscode.postMessage({ type: "visiblePainted" });
-    });
-    return;
-  }
   if (message.type === "scanning") {
     setScanning(true);
     subtitle.textContent = "正在加载项目列表…";
@@ -398,6 +351,8 @@ window.addEventListener("message", (event) => {
   }
 });
 
-afterPaint(function () {
-  vscode.postMessage({ type: "shellPainted" });
-});
+const bootstrapEl = document.getElementById("bootstrap");
+if (bootstrapEl && bootstrapEl.textContent) {
+  applyState(JSON.parse(bootstrapEl.textContent));
+}
+vscode.postMessage({ type: "ready" });

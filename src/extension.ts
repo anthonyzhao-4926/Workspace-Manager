@@ -15,6 +15,10 @@ import { WorkspaceService } from "./workspaceService";
 export function activate(context: vscode.ExtensionContext): void {
   const workspaceService = new WorkspaceService(context);
   workspaceService.ensureStorageDir();
+  void workspaceService.clearObsoleteDefaultPathSetting();
+  void workspaceService.migrateProjectFoldersSetting();
+  void workspaceService.migrateStoragePathSetting();
+  void workspaceService.ensureDefaultStoragePathFilled();
   void workspaceService.getProjectList(false);
 
   const treeProvider = new WorkspaceTreeProvider(workspaceService);
@@ -52,14 +56,18 @@ export function activate(context: vscode.ExtensionContext): void {
     );
   };
 
-  const prewarmEditor = () => {
-    CreateWorkspacePanel.prewarm(
-      context.extensionUri,
-      workspaceService,
-      onSaved
-    );
-  };
-  prewarmEditor();
+  context.subscriptions.push(
+    vscode.window.registerWebviewPanelSerializer(CreateWorkspacePanel.viewType, {
+      async deserializeWebviewPanel(webviewPanel: vscode.WebviewPanel) {
+        CreateWorkspacePanel.revive(
+          webviewPanel,
+          context.extensionUri,
+          workspaceService,
+          onSaved
+        );
+      },
+    })
+  );
 
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   const scheduleRefresh = () => {
@@ -74,11 +82,6 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     treeView,
-    treeView.onDidChangeVisibility((event) => {
-      if (event.visible) {
-        prewarmEditor();
-      }
-    }),
     {
       dispose: () => {
         if (refreshTimer) {
@@ -92,14 +95,14 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (
-        event.affectsConfiguration("cursorWorkspace.projectFolders") ||
-        event.affectsConfiguration("projectManager.rootFolders")
-      ) {
+      if (event.affectsConfiguration("cursorWorkspace.projectFolders")) {
         void workspaceService.invalidateProjectCache();
       }
       if (event.affectsConfiguration("cursorWorkspace")) {
         scheduleRefresh();
+      }
+      if (event.affectsConfiguration("cursorWorkspace.workspaceStoragePath")) {
+        workspaceService.ensureStorageDir();
       }
     }),
 
@@ -110,6 +113,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand("cursorWorkspace.create", () => {
       openEditor();
+    }),
+
+    vscode.commands.registerCommand("cursorWorkspace.openSettings", async () => {
+      await workspaceService.ensureDefaultStoragePathFilled();
+      await vscode.commands.executeCommand(
+        "workbench.action.openSettings",
+        "@ext:local.cursor-workspace"
+      );
     }),
 
     vscode.commands.registerCommand(
@@ -205,14 +216,75 @@ export function activate(context: vscode.ExtensionContext): void {
           vscode.window.showErrorMessage(`打开存放目录失败: ${message}`);
         }
       }
+    ),
+
+    vscode.commands.registerCommand(
+      "cursorWorkspace.pickStoragePath",
+      async () => {
+        try {
+          const picked = await workspaceService.pickStorageDir();
+          if (!picked) {
+            return;
+          }
+          await workspaceService.setStoragePath(picked);
+          vscode.window.setStatusBarMessage(
+            `工作区目录已设为 ${picked}`,
+            3000
+          );
+        } catch (pickStoragePathErr) {
+          const message =
+            pickStoragePathErr instanceof Error
+              ? pickStoragePathErr.message
+              : String(pickStoragePathErr);
+          vscode.window.showErrorMessage(`选择工作区目录失败: ${message}`);
+        }
+      }
+    ),
+
+    vscode.commands.registerCommand(
+      "cursorWorkspace.useDefaultStoragePath",
+      async () => {
+        try {
+          const defaultDir = workspaceService.getDefaultStorageDir();
+          await workspaceService.setStoragePath(defaultDir);
+          vscode.window.setStatusBarMessage(
+            `工作区目录已设为默认路径 ${defaultDir}`,
+            3000
+          );
+        } catch (useDefaultPathErr) {
+          const message =
+            useDefaultPathErr instanceof Error
+              ? useDefaultPathErr.message
+              : String(useDefaultPathErr);
+          vscode.window.showErrorMessage(`设置默认工作区目录失败: ${message}`);
+        }
+      }
+    ),
+
+    vscode.commands.registerCommand(
+      "cursorWorkspace.pickProjectFolder",
+      async () => {
+        try {
+          const picked = await workspaceService.pickProjectRootDir();
+          if (!picked) {
+            return;
+          }
+          const added = await workspaceService.addProjectFolders([picked]);
+          if (added.length === 0) {
+            vscode.window.setStatusBarMessage(`路径已在列表中: ${picked}`, 2000);
+            return;
+          }
+          vscode.window.setStatusBarMessage(`已添加 ${added[0]}`, 2000);
+        } catch (pickProjectFolderErr) {
+          const message =
+            pickProjectFolderErr instanceof Error
+              ? pickProjectFolderErr.message
+              : String(pickProjectFolderErr);
+          vscode.window.showErrorMessage(message);
+        }
+      }
     )
   );
-
-  if (workspaceService.getProjectFolders().length === 0) {
-    void vscode.window.showInformationMessage(
-      "Cursor Workspace：可配置 cursorWorkspace.projectFolders 作为候选项目目录；新建时也可直接用路径选择器添加文件夹。"
-    );
-  }
 }
 
 async function openWorkspace(

@@ -2,7 +2,7 @@
   "name": "cursor-workspace",
   "displayName": "Cursor Workspace",
   "description": "管理 Cursor / VS Code 多根 Workspace：从配置路径勾选一级项目新建，支持打开、编辑与删除。",
-  "version": "0.1.19",
+  "version": "0.1.40",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -20,7 +20,12 @@
     "onCommand:cursorWorkspace.delete",
     "onCommand:cursorWorkspace.edit",
     "onCommand:cursorWorkspace.editCurrent",
-    "onCommand:cursorWorkspace.openStorageFolder"
+    "onCommand:cursorWorkspace.openStorageFolder",
+    "onCommand:cursorWorkspace.pickStoragePath",
+    "onCommand:cursorWorkspace.useDefaultStoragePath",
+    "onCommand:cursorWorkspace.pickProjectFolder",
+    "onCommand:cursorWorkspace.openSettings",
+    "onWebviewPanel:cursorWorkspace.create"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -33,12 +38,15 @@
             "type": "string"
           },
           "default": [],
-          "description": "存放候选项目的目录。插件只扫描这些目录下的第一层文件夹，不递归。未配置时会回退读取 projectManager.rootFolders。"
+          "uniqueItems": true,
+          "order": 0,
+          "markdownDescription": "插件只扫描这些目录下的第一层文件夹，不递归。\n\n[选择路径](command:cursorWorkspace.pickProjectFolder)"
         },
         "cursorWorkspace.workspaceStoragePath": {
           "type": "string",
           "default": "",
-          "description": "Workspace 文件（.code-workspace）存放目录。留空则使用插件全局存储目录。"
+          "order": 1,
+          "markdownDescription": "Workspace 文件（`.code-workspace`）存放目录，可直接填写。首次使用会自动填入插件默认路径。\n\n[选择路径](command:cursorWorkspace.pickStoragePath) &nbsp;&nbsp; [默认路径](command:cursorWorkspace.useDefaultStoragePath)"
         }
       }
     },
@@ -62,7 +70,7 @@
     "viewsWelcome": [
       {
         "view": "cursorWorkspace.workspaces",
-        "contents": "尚未保存任何 Workspace。\n[新建 Workspace](command:cursorWorkspace.create)\n\n请先在设置中配置 `cursorWorkspace.projectFolders`（仅扫描一级子文件夹）。"
+        "contents": "尚未保存任何 Workspace。\n[新建 Workspace](command:cursorWorkspace.create)"
       }
     ],
     "commands": [
@@ -75,6 +83,11 @@
         "command": "cursorWorkspace.create",
         "title": "新建 Workspace",
         "icon": "$(add)"
+      },
+      {
+        "command": "cursorWorkspace.openSettings",
+        "title": "打开设置",
+        "icon": "$(gear)"
       },
       {
         "command": "cursorWorkspace.open",
@@ -103,6 +116,18 @@
       {
         "command": "cursorWorkspace.openStorageFolder",
         "title": "打开 Workspace 存放目录"
+      },
+      {
+        "command": "cursorWorkspace.pickStoragePath",
+        "title": "选择工作区目录"
+      },
+      {
+        "command": "cursorWorkspace.useDefaultStoragePath",
+        "title": "使用默认工作区目录"
+      },
+      {
+        "command": "cursorWorkspace.pickProjectFolder",
+        "title": "选择路径"
       }
     ],
     "menus": {
@@ -118,9 +143,14 @@
           "group": "navigation@1"
         },
         {
-          "command": "cursorWorkspace.refresh",
+          "command": "cursorWorkspace.openSettings",
           "when": "view == cursorWorkspace.workspaces",
           "group": "navigation@2"
+        },
+        {
+          "command": "cursorWorkspace.refresh",
+          "when": "view == cursorWorkspace.workspaces",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -170,6 +200,10 @@
         },
         {
           "command": "cursorWorkspace.delete",
+          "when": "false"
+        },
+        {
+          "command": "cursorWorkspace.pickProjectFolder",
           "when": "false"
         }
       ]

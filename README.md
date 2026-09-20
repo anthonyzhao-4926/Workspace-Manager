@@ -22,10 +22,8 @@
 第一次使用前，先告诉插件去哪里找项目：
 
 1. 打开设置，搜索 `Cursor Workspace`
-2. 在 **Project Folders** 里填入项目所在目录，例如 `~/projects`、`~/work`
+2. 在 **Project Folders** 点「选择路径」添加目录
 3. 插件只会读取这些目录下的**第一层文件夹**作为候选项目
-
-如果已经装了 Project Manager，并且配置过 `projectManager.rootFolders`，也可以先不填，插件会沿用那份目录。
 
 候选项目不够时，新建/编辑页里也可以临时从磁盘选文件夹。
 
@@ -55,8 +53,8 @@
 
 | 设置 | 说明 |
 |------|------|
-| **Project Folders** | 候选项目所在目录。只扫第一层文件夹 |
-| **Workspace Storage Path** | Workspace 文件存放位置。留空则用插件自己的目录 |
+| **Project Folders** | 点「选择路径」添加；列表中可删除；只扫第一层文件夹 |
+| **Workspace Storage Path** | Workspace 文件存放位置。首次使用自动填入插件默认路径，也可改成其他目录 |
 
 ## 常见问题
 

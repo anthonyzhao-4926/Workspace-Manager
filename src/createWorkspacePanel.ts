@@ -18,8 +18,7 @@ interface EditorPayload {
 }
 
 type IncomingMessage =
-  | { type: "shellPainted" }
-  | { type: "visiblePainted" }
+  | { type: "ready" }
   | { type: "pickFolders" }
   | { type: "refreshProjects" }
   | { type: "editCurrent" }
@@ -28,7 +27,7 @@ type IncomingMessage =
 /**
  * 新建 / 编辑 Workspace 面板：在编辑器区域打开独立页，勾选扫描到的项目。
  * 同一窗口内复用同一个 Webview，保存后不销毁。
- * 点新建立刻 reveal 已预热的骨架页；列表脚本 defer，不挡首屏。
+ * 首屏把框架和项目列表一起渲染，不再分两阶段填列表。
  */
 export class CreateWorkspacePanel {
   public static readonly viewType = "cursorWorkspace.create";
@@ -39,39 +38,26 @@ export class CreateWorkspacePanel {
   private readonly disposables: vscode.Disposable[] = [];
   private editing: WorkspaceInfo | undefined;
   private pendingInit = true;
-  private wantProjects = false;
-  private shellPainted = false;
-  private visiblePaintRequested = false;
-  private projectsPosted = false;
+  private webviewReady = false;
 
   private constructor(
     panel: vscode.WebviewPanel,
     private readonly extensionUri: vscode.Uri,
     private readonly workspaceService: WorkspaceService,
     private readonly onSaved: (filePath: string, openAfter: boolean) => Promise<void>,
-    editing?: WorkspaceInfo,
-    wantProjects = false
+    editing?: WorkspaceInfo
   ) {
     this.panel = panel;
     this.editing = editing;
-    this.wantProjects = wantProjects;
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
-    this.panel.onDidChangeViewState(
-      () => this.onViewStateChanged(),
-      null,
-      this.disposables
-    );
 
     this.panel.webview.onDidReceiveMessage(
       async (message: IncomingMessage) => {
         try {
           switch (message.type) {
-            case "shellPainted":
-              this.shellPainted = true;
-              this.requestVisiblePaint();
-              break;
-            case "visiblePainted":
-              this.fillProjectsIfReady();
+            case "ready":
+              this.webviewReady = true;
+              void this.postState();
               break;
             case "pickFolders":
               await this.handlePickFolders();
@@ -102,32 +88,29 @@ export class CreateWorkspacePanel {
       this.disposables
     );
 
+    this.panel.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "media")],
+    };
     this.panel.webview.html = this.getHtml(this.panel.webview);
   }
 
-  static prewarm(
+  static revive(
+    panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
     workspaceService: WorkspaceService,
     onSaved: (filePath: string, openAfter: boolean) => Promise<void>
   ): void {
-    if (CreateWorkspacePanel.currentPanel) {
-      return;
-    }
-    const panel = vscode.window.createWebviewPanel(
-      CreateWorkspacePanel.viewType,
-      "新建 Workspace",
-      {
-        viewColumn: vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One,
-        preserveFocus: true,
-      },
-      CreateWorkspacePanel.panelOptions(extensionUri)
-    );
+    const existing = CreateWorkspacePanel.currentPanel;
     CreateWorkspacePanel.currentPanel = new CreateWorkspacePanel(
       panel,
       extensionUri,
       workspaceService,
       onSaved
     );
+    if (existing && existing.panel !== panel) {
+      existing.panel.dispose();
+    }
   }
 
   static show(
@@ -160,8 +143,7 @@ export class CreateWorkspacePanel {
       extensionUri,
       workspaceService,
       onSaved,
-      editing,
-      true
+      editing
     );
   }
 
@@ -176,69 +158,10 @@ export class CreateWorkspacePanel {
   }
 
   private beginShow(column?: vscode.ViewColumn): void {
-    this.wantProjects = true;
-    this.projectsPosted = false;
-    this.shellPainted = false;
-    this.visiblePaintRequested = false;
     this.panel.reveal(column);
-    void this.resetToShell();
-  }
-
-  private resetToShell(): Thenable<boolean> {
-    return this.panel.webview.postMessage({
-      type: "showShell",
-      ...this.shellPayload(),
-    });
-  }
-
-  private shellPayload(): Omit<EditorPayload, "projects" | "fromCache" | "scannedAt" | "scanning"> {
-    return {
-      storageDir: this.workspaceService.getStorageDir(),
-      mode: this.editing ? "edit" : "create",
-      workspaceName: this.editing?.name ?? "",
-      selectedPaths: this.editing
-        ? this.workspaceService
-            .foldersToProjects(this.editing.folders)
-            .map((project) => project.path)
-        : [],
-      initForm: true,
-      ...this.currentEditorMeta(),
-    };
-  }
-
-  private onViewStateChanged(): void {
-    if (!this.panel.visible) {
-      this.visiblePaintRequested = false;
-      return;
+    if (this.webviewReady) {
+      void this.postState();
     }
-    this.requestVisiblePaint();
-  }
-
-  private requestVisiblePaint(): void {
-    if (
-      !this.wantProjects ||
-      !this.shellPainted ||
-      this.projectsPosted ||
-      !this.panel.visible ||
-      this.visiblePaintRequested
-    ) {
-      return;
-    }
-    this.visiblePaintRequested = true;
-    void this.panel.webview.postMessage({ type: "confirmVisiblePaint" });
-  }
-
-  private fillProjectsIfReady(): void {
-    if (
-      !this.wantProjects ||
-      !this.shellPainted ||
-      !this.panel.visible ||
-      this.projectsPosted
-    ) {
-      return;
-    }
-    this.projectsPosted = true;
-    void this.postState();
   }
 
   private handleEditCurrent(): void {
@@ -322,76 +245,66 @@ export class CreateWorkspacePanel {
     return merged;
   }
 
+  private buildPayload(
+    projects: ProjectInfo[],
+    fromCache: boolean,
+    scannedAt: number,
+    scanning: boolean
+  ): EditorPayload {
+    return {
+      storageDir: this.workspaceService.getStorageDir(),
+      projects: this.mergeProjects(projects),
+      fromCache,
+      scannedAt,
+      scanning,
+      mode: this.editing ? "edit" : "create",
+      workspaceName: this.editing?.name ?? "",
+      selectedPaths: this.editing
+        ? this.workspaceService
+            .foldersToProjects(this.editing.folders)
+            .map((project) => project.path)
+        : [],
+      initForm: this.pendingInit,
+      ...this.currentEditorMeta(),
+    };
+  }
+
   private async postState(forceRefresh = false): Promise<void> {
-    const storageDir = this.workspaceService.getStorageDir();
-    const initForm = this.pendingInit;
-    const mode: "create" | "edit" = this.editing ? "edit" : "create";
-    const workspaceName = this.editing?.name ?? "";
-    const selectedPaths = this.editing
-      ? this.workspaceService
-          .foldersToProjects(this.editing.folders)
-          .map((project) => project.path)
-      : [];
-
-    this.panel.title = mode === "edit" ? "编辑 Workspace" : "新建 Workspace";
-    const currentMeta = this.currentEditorMeta();
-
-    const postFullState = async (
-      projects: ProjectInfo[],
-      fromCache: boolean,
-      scannedAt: number,
-      scanning: boolean
-    ) => {
-      await this.panel.webview.postMessage({
+    const payload = (projects: ProjectInfo[], fromCache: boolean, scannedAt: number) => {
+      const state = this.buildPayload(projects, fromCache, scannedAt, false);
+      this.panel.title =
+        state.mode === "edit" ? "编辑 Workspace" : "新建 Workspace";
+      this.pendingInit = false;
+      return this.panel.webview.postMessage({
         type: "state",
-        storageDir,
-        projects: this.mergeProjects(projects),
-        fromCache,
-        scannedAt,
-        scanning,
-        mode,
-        workspaceName,
-        selectedPaths,
-        initForm,
-        ...currentMeta,
+        ...state,
       } satisfies EditorPayload & { type: "state" });
-      if (!scanning) {
-        this.pendingInit = false;
-      }
     };
 
-    if (!forceRefresh) {
-      const cached = this.workspaceService.getCachedProjectList();
-      if (cached) {
-        await postFullState(cached.projects, true, cached.scannedAt, false);
-        return;
-      }
-
-      await postFullState([], false, 0, true);
-      void this.workspaceService.getProjectList(false).then((result) => {
-        if (CreateWorkspacePanel.currentPanel !== this) {
-          return;
-        }
-        void postFullState(
-          result.projects,
-          result.fromCache,
-          result.scannedAt,
-          false
-        );
+    if (forceRefresh) {
+      await this.panel.webview.postMessage({
+        type: "scanning",
+        scanning: true,
       });
+      const refreshed = await this.workspaceService.getProjectList(true);
+      await payload(refreshed.projects, refreshed.fromCache, refreshed.scannedAt);
       return;
     }
 
-    await this.panel.webview.postMessage({
-      type: "scanning",
-      scanning: true,
-    });
-    const result = await this.workspaceService.getProjectList(true);
-    await postFullState(result.projects, result.fromCache, result.scannedAt, false);
+    const cached = this.workspaceService.getCachedProjectList();
+    if (cached) {
+      await payload(cached.projects, true, cached.scannedAt);
+      return;
+    }
+
+    const scanned = await this.workspaceService.getProjectList(false);
+    await payload(scanned.projects, scanned.fromCache, scanned.scannedAt);
   }
 
   private dispose(): void {
-    CreateWorkspacePanel.currentPanel = undefined;
+    if (CreateWorkspacePanel.currentPanel === this) {
+      CreateWorkspacePanel.currentPanel = undefined;
+    }
     while (this.disposables.length) {
       const disposable = this.disposables.pop();
       disposable?.dispose();
@@ -403,6 +316,14 @@ export class CreateWorkspacePanel {
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, "media", "createWorkspace.js")
     );
+    const cached = this.workspaceService.getCachedProjectList();
+    const bootstrap = this.buildPayload(
+      cached?.projects ?? [],
+      Boolean(cached),
+      cached?.scannedAt ?? 0,
+      !cached
+    );
+    const bootstrapJson = JSON.stringify(bootstrap).replace(/</g, "\\u003c");
 
     return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -669,12 +590,7 @@ export class CreateWorkspacePanel {
     <div class="picker">
       <div class="picker-col">
         <div class="picker-col-title">可选项目</div>
-        <div id="projectList" class="project-list">
-          <div class="loading">
-            <div class="loading-spinner" aria-hidden="true"></div>
-            <div class="loading-text">正在加载项目列表</div>
-          </div>
-        </div>
+        <div id="projectList" class="project-list"></div>
       </div>
       <div class="picker-col picker-col-selected">
         <div class="picker-col-title">已选择 <span class="count" id="countLabel">0</span></div>
@@ -689,7 +605,8 @@ export class CreateWorkspacePanel {
     <button id="saveOpenBtn">创建并打开</button>
   </div>
   </div>
-  <script nonce="${nonce}" src="${scriptUri}" defer></script>
+  <script type="application/json" id="bootstrap" nonce="${nonce}">${bootstrapJson}</script>
+  <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }
