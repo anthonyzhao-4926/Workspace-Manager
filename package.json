@@ -2,7 +2,7 @@
   "name": "cursor-workspace",
   "displayName": "Cursor Workspace",
   "description": "管理 Cursor / VS Code 多根 Workspace：从配置路径勾选一级项目新建，支持打开、编辑与删除。",
-  "version": "0.1.40",
+  "version": "0.1.41",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -12,6 +12,7 @@
     "Other"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onView:cursorWorkspace.workspaces",
     "onCommand:cursorWorkspace.create",
     "onCommand:cursorWorkspace.refresh",

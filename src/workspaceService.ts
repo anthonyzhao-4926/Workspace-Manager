@@ -91,7 +91,7 @@ export class WorkspaceService {
   }
 
   /** 将误设为数组的 workspaceStoragePath 还原为字符串。 */
-  async migrateStoragePathSetting(): Promise<void> {
+  migrateStoragePathSetting(): void {
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
     const raw = config.get(STORAGE_PATH_KEY);
     if (!Array.isArray(raw)) {
@@ -101,15 +101,11 @@ export class WorkspaceService {
     const paths = this.parseProjectFolders(raw);
     const value = paths[0] ?? "";
 
-    try {
-      await config.update(
-        STORAGE_PATH_KEY,
-        value,
-        vscode.ConfigurationTarget.Global
-      );
-    } catch (migrateStoragePathErr) {
-      console.error("Failed to migrate workspaceStoragePath", migrateStoragePathErr);
-    }
+    void config
+      .update(STORAGE_PATH_KEY, value, vscode.ConfigurationTarget.Global)
+      .then(undefined, (migrateStoragePathErr: unknown) => {
+        console.error("Failed to migrate workspaceStoragePath", migrateStoragePathErr);
+      });
   }
 
   async removeProjectFolder(dir: string): Promise<void> {
@@ -217,10 +213,16 @@ export class WorkspaceService {
 
   /** 用户填写的工作区目录；未填写时为空 */
   getConfiguredStoragePath(): string {
-    return vscode.workspace
+    const raw = vscode.workspace
       .getConfiguration(CONFIG_SECTION)
-      .get<string>(STORAGE_PATH_KEY, "")
-      .trim();
+      .get<string | string[]>(STORAGE_PATH_KEY, "");
+    if (typeof raw === "string") {
+      return raw.trim();
+    }
+    if (Array.isArray(raw)) {
+      return this.parseProjectFolders(raw)[0] ?? "";
+    }
+    return "";
   }
 
   /** 当前生效的 .code-workspace 文件存放目录 */

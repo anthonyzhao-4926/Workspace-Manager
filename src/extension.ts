@@ -1,7 +1,11 @@
 import * as vscode from "vscode";
 import { CreateWorkspacePanel } from "./createWorkspacePanel";
 import { WorkspaceInfo } from "./types";
-import { WorkspaceItem, WorkspaceTreeProvider } from "./workspaceTreeProvider";
+import {
+  WorkspaceItem,
+  WorkspaceTreeNode,
+  WorkspaceTreeProvider,
+} from "./workspaceTreeProvider";
 import { WorkspaceService } from "./workspaceService";
 
 /**
@@ -14,17 +18,14 @@ import { WorkspaceService } from "./workspaceService";
  */
 export function activate(context: vscode.ExtensionContext): void {
   const workspaceService = new WorkspaceService(context);
-  workspaceService.ensureStorageDir();
+
+  workspaceService.migrateStoragePathSetting();
   void workspaceService.clearObsoleteDefaultPathSetting();
   void workspaceService.migrateProjectFoldersSetting();
-  void workspaceService.migrateStoragePathSetting();
   void workspaceService.ensureDefaultStoragePathFilled();
   void workspaceService.getProjectList(false);
 
   const treeProvider = new WorkspaceTreeProvider(workspaceService);
-  const treeView = vscode.window.createTreeView("cursorWorkspace.workspaces", {
-    treeDataProvider: treeProvider,
-  });
   const updateHasCurrent = () => {
     void vscode.commands.executeCommand(
       "setContext",
@@ -57,6 +58,37 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   context.subscriptions.push(
+    vscode.commands.registerCommand("cursorWorkspace.create", () => {
+      openEditor();
+    }),
+    vscode.commands.registerCommand("cursorWorkspace.refresh", () => {
+      refresh();
+      vscode.window.setStatusBarMessage("Workspace 列表已刷新", 2000);
+    })
+  );
+
+  let treeView: vscode.TreeView<WorkspaceTreeNode> | undefined;
+  try {
+    treeView = vscode.window.createTreeView("cursorWorkspace.workspaces", {
+      treeDataProvider: treeProvider,
+    });
+  } catch (createTreeViewErr) {
+    console.error("Failed to create tree view, falling back", createTreeViewErr);
+    context.subscriptions.push(
+      vscode.window.registerTreeDataProvider(
+        "cursorWorkspace.workspaces",
+        treeProvider
+      )
+    );
+  }
+
+  try {
+    workspaceService.ensureStorageDir();
+  } catch (ensureStorageDirErr) {
+    console.error("Failed to ensure storage dir", ensureStorageDirErr);
+  }
+
+  context.subscriptions.push(
     vscode.window.registerWebviewPanelSerializer(CreateWorkspacePanel.viewType, {
       async deserializeWebviewPanel(webviewPanel: vscode.WebviewPanel) {
         CreateWorkspacePanel.revive(
@@ -81,7 +113,7 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   context.subscriptions.push(
-    treeView,
+    ...(treeView ? [treeView] : []),
     {
       dispose: () => {
         if (refreshTimer) {
@@ -102,17 +134,12 @@ export function activate(context: vscode.ExtensionContext): void {
         scheduleRefresh();
       }
       if (event.affectsConfiguration("cursorWorkspace.workspaceStoragePath")) {
-        workspaceService.ensureStorageDir();
+        try {
+          workspaceService.ensureStorageDir();
+        } catch (ensureStorageDirErr) {
+          console.error("Failed to ensure storage dir", ensureStorageDirErr);
+        }
       }
-    }),
-
-    vscode.commands.registerCommand("cursorWorkspace.refresh", () => {
-      refresh();
-      vscode.window.setStatusBarMessage("Workspace 列表已刷新", 2000);
-    }),
-
-    vscode.commands.registerCommand("cursorWorkspace.create", () => {
-      openEditor();
     }),
 
     vscode.commands.registerCommand("cursorWorkspace.openSettings", async () => {
